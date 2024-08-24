@@ -792,7 +792,7 @@ class Server(Base):
         options.update({"loader": PackageLoader("agent", "templates")})
         environment = Environment(**options)
         template = environment.get_template(template)
-
+        print(f"rendering {outfile}")
         with open(outfile, "w") as f:
             f.write(template.render(**context))
 
