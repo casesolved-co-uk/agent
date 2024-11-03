@@ -101,6 +101,7 @@ class ImageBuilder(Base):
         )
         self.output["build"] = []
         self._publish_docker_build_output(result)
+        self._docker_cleanup()
         return {"output": self.output["build"]}
 
     def _get_build_command(self) -> str:
@@ -129,6 +130,21 @@ class ImageBuilder(Base):
             self.output["build"].append(line)
             self._publish_throttled_output(False)
         self._publish_throttled_output(True)
+
+    def _docker_cleanup(self):
+        environment = self._get_build_environment()
+        cmds = [
+            "docker buildx prune -f",
+            "journalctl --vacuum-size=500M",
+            "docker exec -it -u root registry bin/registry garbage-collect --delete-untagged /etc/docker/registry/config.yml",
+        ]
+        for cmd in cmds:
+            result = self._run(
+                command=cmd,
+                environment=environment,
+                input_filepath=self.filepath,  # dummy
+            )
+            self._publish_docker_build_output(result)
 
     @step("Push Docker Image")
     def _push_docker_image(self):
