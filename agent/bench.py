@@ -12,6 +12,7 @@ from glob import glob
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict
+from contextlib import contextmanager
 
 import requests
 
@@ -549,7 +550,7 @@ class Bench(Base):
             return self.stop()
         except AgentException as e:
             if "No such container" in e.data["output"]:
-                pass
+                return {"output": "WARNING: container not found"}
             else:
                 raise
 
@@ -782,14 +783,104 @@ class Bench(Base):
                 "--resolve-image=never --with-registry-auth "
                 f"--compose-file docker-compose.yml {self.name} "
             )
-        return self.execute(command)
+        out = self.execute(command)
+        out.update({"output": out.get("output", "") + self.add_ufw_ssh_rule()})
+        return out
+
+    def get_docker_ip(self, name=None):
+        container_name = name or self.name
+        return self.execute("docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' " + container_name, non_zero_throw=False).get("output")
+
+    _iptables_ssh_rule = "-A DOCKER-USER -i docker0 -o docker0 -s {src} -d {dest} -p tcp --dport 2200 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT"
+    def get_ufw_ssh_rule(self):
+        src = self.get_docker_ip("ssh")
+        dest = self.get_docker_ip()
+        if not src or not dest:
+            return ""
+        rule = self._iptables_ssh_rule.format(src=src, dest=dest)
+        return rule
+
+    _ufw_block_start = "### BEGIN docker-container-acl"
+    @classmethod
+    @contextmanager
+    def _modify_ufw_rules(cls):
+        # we use binary mode because f.tell() is disabled in text mode; decode lines manually
+        with open("/etc/ufw/after.rules", "rb+") as f:
+            our_rules = []
+            tail = []
+            record_rules = False
+            record_tail = False
+            offset = 0
+            try:
+                for byte_line in f:
+                    line = byte_line.decode("utf-8")
+                    if record_rules and line.startswith("###"):
+                        record_rules = False
+                        record_tail = True
+                    if record_rules:
+                        our_rules.append(line)
+                    if record_tail:
+                        tail.append(line)
+                    if not record_tail and line.startswith(cls._ufw_block_start):
+                        record_rules = True
+                        offset = f.tell()
+                if 0 == offset:
+                    return
+                yield our_rules
+            finally:
+                # reassemble
+                if offset and record_tail:
+                    f.seek(offset)
+                    f.truncate()
+                    f.writelines(l.encode("utf-8") for l in our_rules)
+                    f.writelines(l.encode("utf-8") for l in tail)
+
+    def _ufw_reload(self):
+        self.execute("sudo /usr/sbin/iptables -F DOCKER-USER", non_zero_throw=False)
+        return self.execute("sudo /usr/sbin/ufw reload", non_zero_throw=False)
+
+    def add_ufw_ssh_rule(self):
+        if not self.bench_config.get("is_ssh_enabled", False):
+            return ""
+        bench_rule = self.get_ufw_ssh_rule()
+        if not bench_rule:
+            return ""
+        with self._modify_ufw_rules() as rules:
+            for rule in rules:
+                # don't duplicate
+                if rule.startswith(bench_rule):
+                    return ""
+            rules.append(bench_rule + "\n")
+        self._ufw_reload()
+        return f"\nUFW Added: {bench_rule}"
+
+    def del_ufw_ssh_rule(self):
+        bench_rule = self.get_ufw_ssh_rule()
+        if not bench_rule:
+            return ""
+        msg = ""
+        with self._modify_ufw_rules() as rules:
+            try:
+                rules.remove(bench_rule + "\n")
+                msg = f"\nUFW Removed: {bench_rule}"
+            except ValueError:
+                msg = f"\nUFW rule not found when deleting: {bench_rule}"
+        self._ufw_reload()
+        return msg
 
     def stop(self):
+        msg = self.del_ufw_ssh_rule()
         if self.bench_config.get("single_container"):
-            self.execute(f"docker stop {self.name}")
-            return self.execute(f"docker rm {self.name}")
+            out = self.execute(f"docker stop {self.name}")
+            out.update({"output":
+                out.get("output", "") + self.execute(f"docker rm {self.name}").get("output", "")
+            })
         else:
-            return self.execute(f"docker stack rm {self.name}")
+            out = self.execute(f"docker stack rm {self.name}")
+        out.update({"output":
+            out.get("output", "") + msg
+        })
+        return out
 
     @step("Stop Bench")
     def _stop(self):

@@ -96,8 +96,9 @@ class Server(Base):
         bench.update_config(common_site_config, bench_config)
         if bench.bench_config.get("single_container"):
             bench.generate_supervisor_config()
-        bench.deploy()
+        out = bench.deploy()
         bench.setup_nginx()
+        return out
 
     def container_exists(self, name: str):
         """
@@ -115,6 +116,7 @@ class Server(Base):
     @job("Archive Bench", priority="low")
     def archive_bench(self, name):
         bench_directory = os.path.join(self.benches_directory, name)
+        out = {}
         if not os.path.exists(bench_directory):
             return
         try:
@@ -127,9 +129,10 @@ class Server(Base):
         else:
             if bench.sites:
                 raise Exception(f"Bench has sites: {bench.sites}")
-            bench.disable_production()
+            out.update(bench.disable_production())
         self.container_exists(name)
         self.move_bench_to_archived_directory(name)
+        return out
 
     @job("Cleanup Unused Files", priority="low")
     def cleanup_unused_files(self):
