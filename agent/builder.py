@@ -37,6 +37,7 @@ class ImageBuilder(Base):
         self.registry = registry
 
         # Build context, params
+        # Is a deploy-###-###.tar.gz
         self.filename = filename
         self.filepath = os.path.join(
             get_image_build_context_directory(),
@@ -94,14 +95,34 @@ class ImageBuilder(Base):
         # build runs on the press server.
         command = self._get_build_command()
         environment = self._get_build_environment()
+        self.output["build"] = []
+        self._check_and_build_base_image(environment)
         result = self._run(
             command=command,
             environment=environment,
             input_filepath=self.filepath,
         )
-        self.output["build"] = []
         self._publish_docker_build_output(result)
         return {"output": self.output["build"]}
+
+    def _check_and_build_base_image(self, env):
+        import hashlib
+        import tarfile
+        with tarfile.open(self.filepath, "r:gz") as tar:
+            with tar.extractfile("./Dockerbase") as f:
+                basehash = hashlib.sha256(f.read()).hexdigest()
+        # _run is a line generator:
+        hash = "".join(self._run(
+            command="""docker image inspect frappe-base:latest --format '{{ index .Config.Labels "hash" }}'""",
+            input_filepath=self.filepath,
+        )).strip()
+        if hash != basehash:
+            result = self._run(
+                command=f"docker buildx build -f Dockerbase --platform linux/amd64 -t frappe-base:latest --label hash={basehash} --no-cache - ",
+                input_filepath=self.filepath, # tar.gz build context
+                environment=env,
+            )
+            self._publish_docker_build_output(result)
 
     def _get_build_command(self) -> str:
         command = "docker buildx build --platform linux/amd64"
@@ -172,8 +193,8 @@ class ImageBuilder(Base):
     def _run(
         self,
         command: str,
-        environment: dict,
         input_filepath: str,
+        environment: dict = None,
     ):
         with open(input_filepath, "rb") as input_file:
             process = Popen(
