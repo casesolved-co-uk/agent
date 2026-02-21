@@ -123,6 +123,17 @@ class ImageBuilder(Base):
                 environment=env,
             )
             self._publish_docker_build_output(result)
+            # protect from 'docker system prune -af' run by 'Remove Unused Docker Artefacts'
+            remove_output = "\n".join(self._run(
+                command="docker rm -f keep-frappe-base",
+                input_filepath=self.filepath,
+            )).strip()
+            self.output["build"].append(remove_output + "\n")
+            container_id = "\n".join(self._run(
+                command="docker create --name keep-frappe-base frappe-base:latest",
+                input_filepath=self.filepath,
+            )).strip()
+            self.output["build"].append(f"Keep frappe base container: {container_id}\n")
 
     def _get_build_command(self) -> str:
         command = "docker buildx build --platform linux/amd64"
