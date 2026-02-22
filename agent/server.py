@@ -192,7 +192,9 @@ class Server(Base):
     @step("Remove Unused Docker Artefacts")
     def remove_unused_docker_artefacts(self):
         before = self.execute("docker system df -v")["output"].split("\n")
-        prune = self.execute("docker system prune -af")["output"].split("\n")
+        prune = self.execute("docker image prune -af")["output"].split("\n")
+        prune += self.execute("docker builder prune -af")["output"].split("\n")
+        prune += self.execute("docker exec -it -u root registry bin/registry garbage-collect --delete-untagged /etc/docker/registry/config.yml")["output"].split("\n")
         after = self.execute("docker system df -v")["output"].split("\n")
         return {
             "before": before,
