@@ -194,7 +194,10 @@ class Server(Base):
         before = self.execute("docker system df -v")["output"].split("\n")
         prune = self.execute("docker image prune -af")["output"].split("\n")
         prune += self.execute("docker builder prune -af")["output"].split("\n")
-        prune += self.execute("docker exec -it -u root registry bin/registry garbage-collect --delete-untagged /etc/docker/registry/config.yml")["output"].split("\n")
+        prune += self.execute(
+            "docker exec -it -u root registry bin/registry garbage-collect --delete-untagged /etc/docker/registry/config.yml",
+            non_zero_throw=False,
+        )["output"].split("\n")
         after = self.execute("docker system df -v")["output"].split("\n")
         return {
             "before": before,
@@ -399,11 +402,6 @@ class Server(Base):
             )
             shutil.move(destination, archived_site_path)
         shutil.move(site.directory, target.sites_directory)
-
-    def execute(self, command, directory=None, skip_output_log=False):
-        return super().execute(
-            command, directory=directory, skip_output_log=skip_output_log
-        )
 
     @job("Reload NGINX")
     def restart_nginx(self):
